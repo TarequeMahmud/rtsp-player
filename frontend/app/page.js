@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import Hls from "hls.js";
 import axios from "axios";
+import { Rnd } from "react-rnd";
 
 const API_BASE = "http://localhost:5000";
 
@@ -11,8 +12,14 @@ export default function Home() {
   const [streamId, setStreamId] = useState("");
   const [loading, setLoading] = useState(false);
   const [overlays, setOverlays] = useState([]);
-  const [newOverlay, setNewOverlay] = useState({ type: "text", content: "Hello", position: { x: 10, y: 10 }, size: { w: 150, h: 50 } });
+  const [newOverlay, setNewOverlay] = useState({
+    type: "text",
+    content: "New Overlay",
+    position: { x: 20, y: 20 },
+    size: { w: 150, h: 50 },
+  });
   const videoRef = useRef(null);
+  const containerRef = useRef(null);
 
   const convert = async (e) => {
     e?.preventDefault();
@@ -45,8 +52,7 @@ export default function Home() {
   }, [hlsUrl]);
 
   useEffect(() => {
-    if (!streamId) return;
-    fetchOverlays();
+    if (streamId) fetchOverlays();
   }, [streamId]);
 
   const fetchOverlays = async () => {
@@ -58,98 +64,142 @@ export default function Home() {
     e?.preventDefault();
     const payload = { ...newOverlay, stream_id: streamId };
     const res = await axios.post(`${API_BASE}/api/overlays`, payload);
-    setOverlays(prev => [...prev, res.data]);
-    setNewOverlay({ ...newOverlay, content: "Hello" });
+    setOverlays((prev) => [...prev, res.data]);
+  };
+
+  const updateOverlay = async (id, patch) => {
+    setOverlays((prev) =>
+      prev.map((o) => (o._id === id ? { ...o, ...patch } : o))
+    );
+    await axios.put(`${API_BASE}/api/overlays/${id}`, patch);
   };
 
   const deleteOverlay = async (id) => {
     await axios.delete(`${API_BASE}/api/overlays/${id}`);
-    setOverlays(prev => prev.filter(o => o._id !== id));
-  };
-
-  const updateOverlay = async (id, patch) => {
-    const res = await axios.put(`${API_BASE}/api/overlays/${id}`, patch);
-    setOverlays(prev => prev.map(o => o._id === id ? res.data : o));
+    setOverlays((prev) => prev.filter((o) => o._id !== id));
   };
 
   return (
-    <main className="p-6 min-h-screen bg-gray-100 flex gap-8">
-      <section className="w-1/2">
-        <h1 className="text-xl font-bold mb-4">RTSP → HLS Player</h1>
+    <main className="flex flex-col items-center min-h-screen bg-gray-100 p-6">
+      <h1 className="text-2xl font-bold mb-4">RTSP Livestream Player with Overlays</h1>
 
-        {!hlsUrl && (
-          <form onSubmit={convert} className="flex gap-2 mb-4">
-            <input
-              className="border p-2 flex-1"
-              placeholder="rtsp://..."
-              value={rtspUrl}
-              onChange={(e) => setRtspUrl(e.target.value)}
-              disabled={loading}
-            />
-            <button className="bg-blue-600 text-white px-4 rounded" disabled={loading}>
-              {loading ? "Converting..." : "Convert & Play"}
-            </button>
-          </form>
-        )}
+      {!hlsUrl && (
+        <form onSubmit={convert} className="flex gap-2 mb-4">
+          <input
+            className="border p-2 w-96"
+            placeholder="Enter RTSP URL"
+            value={rtspUrl}
+            onChange={(e) => setRtspUrl(e.target.value)}
+            disabled={loading}
+          />
+          <button
+            className="bg-blue-600 text-white px-4 py-2 rounded"
+            disabled={loading}
+          >
+            {loading ? "Loading..." : "Convert & Play"}
+          </button>
+        </form>
+      )}
 
-        {hlsUrl && (
-          <>
-            <div className="mb-2 text-sm">Stream ID: <code>{streamId}</code></div>
-            <video ref={videoRef} controls autoPlay className="w-full rounded shadow" />
-          </>
-        )}
-      </section>
+      {hlsUrl && (
+        <div className="relative" ref={containerRef}>
+          <video
+            ref={videoRef}
+            controls
+            autoPlay
+            className="w-[640px] h-[360px] rounded shadow"
+          />
 
-      <aside className="w-1/2">
-        <h2 className="font-semibold mb-2">Overlays</h2>
+          {/* Overlay container absolutely positioned on top */}
+          <div className="absolute top-0 left-0 w-full h-full pointer-events-none">
+            {overlays.map((o) => (
+              <Rnd
+                key={o._id}
+                bounds="parent"
+                size={{ width: o.size?.w || 150, height: o.size?.h || 50 }}
+                position={{ x: o.position?.x || 0, y: o.position?.y || 0 }}
+                onDragStop={(e, d) => updateOverlay(o._id, { position: { x: d.x, y: d.y } })}
+                onResizeStop={(e, dir, ref, delta, pos) =>
+                  updateOverlay(o._id, {
+                    position: pos,
+                    size: { w: ref.offsetWidth, h: ref.offsetHeight },
+                  })
+                }
+                // <-- IMPORTANT: cancel selectors prevent drag/resize when interacting with them
+                cancel=".no-drag, .no-drag *"
+                className="pointer-events-auto"
+                style={{ zIndex: 5 }}
+                minWidth={40}
+                minHeight={24}
+              >
+                {/* content wrapper: transparent background */}
+                <div className="w-full h-full flex items-center justify-center" style={{ background: "transparent", position: "relative" }}>
+                  {o.type === "text" ? (
+                    <span className="text-sm text-yellow-400 font-semibold select-none">{o.content}</span>
+                  ) : (
+                    <img src={o.content} alt="overlay" className="w-full h-full object-contain select-none" />
+                  )}
 
-        {!streamId && <div className="text-sm text-gray-500">Convert a stream first to manage overlays.</div>}
-
-        {streamId && (
-          <>
-            <form onSubmit={createOverlay} className="mb-4 flex flex-col gap-2">
-              <label className="text-sm">Type & Content</label>
-              <div className="flex gap-2">
-                <select value={newOverlay.type} onChange={e => setNewOverlay({ ...newOverlay, type: e.target.value })} className="border p-2">
-                  <option value="text">Text</option>
-                  <option value="image">Image URL</option>
-                </select>
-                <input value={newOverlay.content} onChange={e => setNewOverlay({ ...newOverlay, content: e.target.value })} className="border p-2 flex-1" />
-              </div>
-
-              <div className="flex gap-2">
-                <input type="number" value={newOverlay.position.x} onChange={e => setNewOverlay({ ...newOverlay, position: { ...newOverlay.position, x: Number(e.target.value) } })} className="border p-2 w-24" />
-                <input type="number" value={newOverlay.position.y} onChange={e => setNewOverlay({ ...newOverlay, position: { ...newOverlay.position, y: Number(e.target.value) } })} className="border p-2 w-24" />
-                <input type="number" value={newOverlay.size.w} onChange={e => setNewOverlay({ ...newOverlay, size: { ...newOverlay.size, w: Number(e.target.value) } })} className="border p-2 w-24" />
-                <input type="number" value={newOverlay.size.h} onChange={e => setNewOverlay({ ...newOverlay, size: { ...newOverlay.size, h: Number(e.target.value) } })} className="border p-2 w-24" />
-              </div>
-
-              <button className="bg-green-600 text-white px-3 py-1 rounded w-32">Add Overlay</button>
-            </form>
-
-            <div className="space-y-2">
-              {overlays.map(o => (
-                <div key={o._id} className="border p-2 rounded bg-white">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="text-sm">Type: <strong>{o.type}</strong></div>
-                      <div className="text-xs text-gray-600">Content: {o.content}</div>
-                      <div className="text-xs text-gray-600">Pos: {o.position?.x},{o.position?.y} • Size: {o.size?.w}×{o.size?.h}</div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button className="text-sm px-2" onClick={() => deleteOverlay(o._id)}>Delete</button>
-                      <button className="text-sm px-2" onClick={() => {
-                        const newPos = { x: (o.position?.x || 0) + 10, y: (o.position?.y || 0) + 5 };
-                        updateOverlay(o._id, { position: newPos });
-                      }}>Nudge →</button>
-                    </div>
-                  </div>
+                  {/* delete button: has .no-drag so Rnd ignores it */}
+                  <button
+                    className="no-drag"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      deleteOverlay(o._id);
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: -10,
+                      right: -10,
+                      width: 24,
+                      height: 24,
+                      borderRadius: 12,
+                      background: "rgba(220,38,38,0.95)",
+                      color: "white",
+                      border: "none",
+                      zIndex: 10,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 12,
+                      lineHeight: 1,
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.3)"
+                    }}
+                    title="Delete overlay"
+                  >
+                    ×
+                  </button>
                 </div>
-              ))}
-            </div>
-          </>
-        )}
-      </aside>
+              </Rnd>
+            ))}
+          </div>
+
+        </div>
+      )}
+
+      {streamId && (
+        <form onSubmit={createOverlay} className="flex gap-2 mt-6">
+          <select
+            value={newOverlay.type}
+            onChange={(e) => setNewOverlay({ ...newOverlay, type: e.target.value })}
+            className="border p-2"
+          >
+            <option value="text">Text</option>
+            <option value="image">Image URL</option>
+          </select>
+          <input
+            value={newOverlay.content}
+            onChange={(e) => setNewOverlay({ ...newOverlay, content: e.target.value })}
+            className="border p-2 w-64"
+            placeholder="Text or Image URL"
+          />
+          <button className="bg-green-600 text-white px-4 py-2 rounded">
+            Add Overlay
+          </button>
+        </form>
+      )}
     </main>
   );
 }
