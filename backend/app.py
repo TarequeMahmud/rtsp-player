@@ -1,34 +1,44 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from utils.stream_converter import convert_rtsp_to_hls
-import os
-import traceback
+import os, traceback
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+from bson.errors import InvalidId
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STREAMS_DIR = os.path.join(BASE_DIR, "streams")
+os.makedirs(STREAMS_DIR, exist_ok=True)
 
 app = Flask(__name__)
 CORS(app)
 
+# Mongo setup
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+client = MongoClient(MONGO_URI)
+db = client.get_database("rtsp_player_db")
+overlays_coll = db.get_collection("overlays")
 
 @app.route('/api/convert', methods=['POST'])
 def convert_rtsp():
     data = request.get_json()
     rtsp_url = data.get('rtsp_url')
-
     if not rtsp_url:
         return jsonify({'error': 'RTSP URL is required'}), 400
-
     try:
         print(f"🎬 Received RTSP request: {rtsp_url}")
         hls_path = convert_rtsp_to_hls(rtsp_url)
-        print(f"✅ Conversion successful: {hls_path}")
-        return jsonify({'hls_url': hls_path})
-    except Exception as e:
-        print("❌ Exception occurred during conversion:")
-        traceback.print_exc()  # prints full error trace to terminal
-        return jsonify({'error': str(e)}), 500
+        # Extract stream_id from path, e.g. "/streams/<uuid>/index.m3u8"
+        stream_id = hls_path.split("/")[2] if len(hls_path.split("/")) > 2 else None
+        print(f"✅ Conversion started: stream_id={stream_id}, path={hls_path}")
+        return jsonify({'stream_id': stream_id, 'hls_url': hls_path})
 
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/streams/<path:filename>')
 def serve_streams(filename):
@@ -36,7 +46,73 @@ def serve_streams(filename):
     print(f"📡 Serving from: {stream_dir}, file: {filename}")
     return send_from_directory(stream_dir, filename)
 
+# --- Overlay CRUD ---
+# Overlay document format:
+# {
+#   _id,
+#   stream_id: "<stream_uuid>",
+#   type: "text"|"image",
+#   content: "some text" or image-url,
+#   position: {"x":0,"y":0},
+#   size: {"w":100,"h":50},
+#   created_at: ...
+# }
+
+@app.route('/api/overlays', methods=['POST'])
+def create_overlay():
+    data = request.get_json()
+    required = ['stream_id','type','content']
+    if not all(k in data for k in required):
+        return jsonify({'error': 'stream_id, type and content required'}), 400
+    doc = {
+        "stream_id": data["stream_id"],
+        "type": data["type"],
+        "content": data["content"],
+        "position": data.get("position", {"x":10,"y":10}),
+        "size": data.get("size", {"w":150,"h":50})
+    }
+    res = overlays_coll.insert_one(doc)
+    doc["_id"] = str(res.inserted_id)
+    return jsonify(doc), 201
+
+@app.route('/api/overlays', methods=['GET'])
+def list_overlays():
+    stream_id = request.args.get('stream_id')
+    q = {"stream_id": stream_id} if stream_id else {}
+    docs = []
+    for d in overlays_coll.find(q).sort("created_at", 1):
+        d["_id"] = str(d["_id"])
+        docs.append(d)
+    return jsonify(docs)
+
+@app.route('/api/overlays/<id>', methods=['PUT'])
+def update_overlay(id):
+    try:
+        oid = ObjectId(id)
+    except InvalidId:
+        return jsonify({'error':'invalid id'}), 400
+    data = request.get_json()
+    allowed = {"content","position","size","type"}
+    update = {k:v for k,v in data.items() if k in allowed}
+    if not update:
+        return jsonify({'error':'nothing to update'}), 400
+    overlays_coll.update_one({"_id": oid}, {"$set": update})
+    doc = overlays_coll.find_one({"_id": oid})
+    if not doc:
+        return jsonify({'error':'not found'}), 404
+    doc["_id"] = str(doc["_id"])
+    return jsonify(doc)
+
+@app.route('/api/overlays/<id>', methods=['DELETE'])
+def delete_overlay(id):
+    try:
+        oid = ObjectId(id)
+    except InvalidId:
+        return jsonify({'error':'invalid id'}), 400
+    res = overlays_coll.delete_one({"_id": oid})
+    if res.deleted_count == 0:
+        return jsonify({'error':'not found'}), 404
+    return jsonify({'deleted': id})
 
 if __name__ == '__main__':
-    os.makedirs(STREAMS_DIR, exist_ok=True)
     app.run(host='0.0.0.0', port=5000, debug=True)
