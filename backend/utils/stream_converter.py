@@ -14,10 +14,6 @@ def convert_rtsp_to_hls(rtsp_url: str) -> str:
 
     output_path = os.path.join(output_dir, "index.m3u8")
 
-    print(f"🎥 Starting FFmpeg conversion")
-    print(f"📁 Output directory: {output_dir}")
-    print(f"🔗 RTSP Source: {rtsp_url}")
-
     command = [
         "ffmpeg",
         "-rtsp_transport", "tcp",
@@ -34,29 +30,18 @@ def convert_rtsp_to_hls(rtsp_url: str) -> str:
     ]
 
     print("⚙️ Running command:", " ".join(command))
+    # Blocking call
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    # 🔹 Run FFmpeg in background thread (non-blocking)
-    def run_ffmpeg():
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        # Continuously print FFmpeg logs
-        for line in process.stderr:
-            print("[FFmpeg]", line.strip())
+    # Continuously print logs while waiting
+    while True:
+        line = process.stderr.readline()
+        if not line:
+            break
+        print("[FFmpeg]", line.strip())
+        # Stop waiting after first m3u8 segment is created
+        if os.path.exists(output_path):
+            break
 
-    threading.Thread(target=run_ffmpeg, daemon=True).start()
-
-    # 🕒 Wait until index.m3u8 exists (max 10s)
-    waited = 0
-    while not os.path.exists(output_path) and waited < 10:
-        time.sleep(0.5)
-        waited += 0.5
-
-    if not os.path.exists(output_path):
-        raise FileNotFoundError("index.m3u8 was not created by ffmpeg in time")
-
-    print(f"✅ HLS stream ready at: {output_path}")
+    # ✅ Return HTTP path
     return f"/streams/{stream_id}/index.m3u8"
